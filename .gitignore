@@ -1,0 +1,26 @@
+# Terraform
+infra/.terraform/
+infra/.terraform.lock.hcl
+infra/tfplan
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/override.tf
+infra/override.tf.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+venv/
+.env
+
+# Docker
+.dockerignore
+
+# OS
+.DS_Store
+Thumbs.db

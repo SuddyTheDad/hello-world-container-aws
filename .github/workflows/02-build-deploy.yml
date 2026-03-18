@@ -1,0 +1,156 @@
+name: 02 - Build and Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - app/**
+      - Dockerfile
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-2
+  ECR_REPO_NAME: hello-world-aws
+  APP_RUNNER_SERVICE_NAME: svc-hwc-aws-aue-001
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  lint:
+    name: Flake8 Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install flake8
+      - run: |
+          flake8 app \
+            --max-line-length=120 \
+            --exclude=app/tests
+
+  security-scan:
+    name: Bandit Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install bandit
+      - run: |
+          bandit -r app \
+            --exclude app/tests \
+            -ll
+
+  unit-tests:
+    name: Pytest with Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: |
+          pip install \
+            -r app/requirements.txt \
+            pytest pytest-cov
+      - run: |
+          pytest app/tests \
+            --cov=app \
+            --cov-report=xml:coverage.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=80
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  build-and-push:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    needs: [lint, security-scan, unit-tests]
+    outputs:
+      image_tag: ${{ steps.build.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: build
+        run: |
+          IMAGE_TAG=${{ github.run_number }}
+          FULL_IMAGE=${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO_NAME }}:$IMAGE_TAG
+
+          docker build -t $FULL_IMAGE .
+          docker push $FULL_IMAGE
+
+          docker tag $FULL_IMAGE ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO_NAME }}:latest
+          docker push ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO_NAME }}:latest
+
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  deploy:
+    name: Deploy to App Runner
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: prod
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Update App Runner and deploy
+        run: |
+          SERVICE_ARN=$(aws apprunner list-services \
+            --query "ServiceSummaryList[?ServiceName=='${{ env.APP_RUNNER_SERVICE_NAME }}'].ServiceArn" \
+            --output text)
+
+          ROLE_ARN=$(aws iam get-role \
+            --role-name role-hwc-aws-apprunner-ecr \
+            --query Role.Arn \
+            --output text)
+
+          aws apprunner update-service \
+            --service-arn $SERVICE_ARN \
+            --source-configuration "{
+              \"ImageRepository\": {
+                \"ImageIdentifier\": \"${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_REPO_NAME }}:${{ needs.build-and-push.outputs.image_tag }}\",
+                \"ImageRepositoryType\": \"ECR\",
+                \"ImageConfiguration\": {\"Port\": \"8000\"}
+              },
+              \"AuthenticationConfiguration\": {
+                \"AccessRoleArn\": \"$ROLE_ARN\"
+              },
+              \"AutoDeploymentsEnabled\": false
+            }"
+
+          echo "Waiting for deployment to complete..."
+          aws apprunner wait service-updated --service-arn $SERVICE_ARN
+
+          SERVICE_URL=$(aws apprunner describe-service \
+            --service-arn $SERVICE_ARN \
+            --query "Service.ServiceUrl" \
+            --output text)
+
+          echo "Deployment complete."
+          echo "App URL: https://$SERVICE_URL"
