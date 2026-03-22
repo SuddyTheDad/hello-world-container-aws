@@ -9,7 +9,7 @@ terraform {
   }
 
   backend "s3" {
-    bucket         = "s3-hwc-aws-tfstate"
+    bucket         = "s3-hwc-aws-tfstate-039612850740"
     key            = "hwc-aws.terraform.tfstate"
     region         = "ap-southeast-2"
     dynamodb_table = "ddb-hwc-aws-tfstate-lock"

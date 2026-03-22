@@ -10,7 +10,7 @@ permissions:
 env:
   AWS_REGION: ap-southeast-2
   TF_VERSION: "1.7.5"
-  TF_STATE_BUCKET: s3-hwc-aws-tfstate
+  TF_STATE_BUCKET: s3-hwc-aws-tfstate-039612850740
   TF_STATE_TABLE: ddb-hwc-aws-tfstate-lock
   TF_STATE_KEY: hwc-aws.terraform.tfstate
 
