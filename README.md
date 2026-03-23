@@ -50,11 +50,11 @@ hello-world-container-aws/
 
 | Resource | Name |
 |----------|------|
-| S3 Bucket | `s3-hwc-aws-tfstate` |
+| S3 Bucket | `s3-hwc-aws-tfstate-<ACCOUNT_ID>` |
 | DynamoDB Lock Table | `ddb-hwc-aws-tfstate-lock` |
 | State Key | `hwc-aws.terraform.tfstate` |
 
-> The S3 bucket and DynamoDB table are created by the Bootstrap job in Pipeline 01 and are never touched by Pipeline 03.
+> The S3 bucket name includes the AWS account ID for global uniqueness. Both the bucket and DynamoDB table are created by the Bootstrap job in Workflow 01 and are never touched by Workflow 03.
 
 ---
 
@@ -122,14 +122,25 @@ Set up at: GitHub repo → Settings → Environments → New environment → `pr
 Trigger: **manual only** (workflow_dispatch)
 
 **Jobs:**
-1. **Bootstrap** — creates S3 bucket (versioned, encrypted) and DynamoDB lock table; idempotent, safe to re-run
-2. **Terraform Apply** — installs Terraform 1.7.5, runs `init` / `plan` / `apply`; requires `prod` environment approval
+
+1. **Bootstrap** — creates the S3 bucket (versioned, AES256 encrypted) and DynamoDB lock table; idempotent and safe to re-run if they already exist.
+
+2. **Terraform Apply** (requires `prod` approval):
+   - Targeted apply — creates ECR repo and IAM role first
+   - Pushes a minimal seed image (`python -m http.server 8000`) to ECR so App Runner has a valid image to pull during creation
+   - Full apply — creates the App Runner service
+
+> **Why a seed image?** App Runner starts and health-checks the container during service creation. Pushing a bare base image with no running process causes `CREATE_FAILED`. The seed image is replaced by the real Flask image when Workflow 02 runs.
+
+> **Why no plan file?** The targeted apply increments the Terraform state serial number, making any previously saved plan stale. A direct `terraform apply -auto-approve` is used instead.
 
 ---
 
 ### Workflow 02 — Build & Deploy (`02-build-deploy.yml`)
 
-Trigger: **auto on push to `main`** for changes to `app/**` or `Dockerfile`
+Triggers:
+- **Auto** on push to `main` for changes to `app/**` or `Dockerfile`
+- **Manual** via workflow_dispatch
 
 **Jobs:**
 
@@ -138,16 +149,22 @@ Trigger: **auto on push to `main`** for changes to `app/**` or `Dockerfile`
 | Flake8 Lint | Max line length 120, excludes `app/tests` |
 | Bandit Security Scan | Recursive, low-level severity (`-ll`), excludes `app/tests` |
 | Pytest + Coverage | Min **80% coverage** required; uploads XML artifact |
-| Build and Push to ECR | Docker build → push to ECR with run number tag + `latest`; ECR scan-on-push triggers automatically |
-| Deploy to App Runner | Updates App Runner with the new image tag → waits for deployment to complete; requires `prod` environment approval |
+| Build and Push to ECR | Docker build → push tagged with run number + `latest`; ECR scan-on-push triggers automatically |
+| Deploy to App Runner | Updates App Runner with the new image tag; polls status every 10s (up to 10 min) until `RUNNING`; requires `prod` environment approval |
+
+> **Note:** `aws apprunner` has no `wait` subcommand. Deployment status is polled via `describe-service`.
 
 ---
 
 ### Workflow 03 — Destroy Infrastructure (`03-destroy-infra.yml`)
 
-Trigger: **manual only** (workflow_dispatch)
+Trigger: **manual only** (workflow_dispatch), requires `prod` approval
 
-Runs `terraform destroy -auto-approve`. The S3 state bucket and DynamoDB table are **not** touched.
+**Steps:**
+1. Empties the ECR repository via `batch-delete-image` (Terraform cannot delete a non-empty repo)
+2. Runs `terraform destroy -auto-approve`
+
+The S3 state bucket and DynamoDB lock table are **not** touched.
 
 ---
 
@@ -158,8 +175,8 @@ Runs `terraform destroy -auto-approve`. The S3 state bucket and DynamoDB table a
 3. Create the `prod` GitHub Environment with required reviewers
 4. Add the `AWS_ROLE_ARN` Actions variable
 5. Run **Workflow 01** (Actions → 01 - Create Infrastructure → Run workflow) — approve the `prod` gate
-6. Run **Workflow 02** (push a change or trigger manually) — approve the deploy gate
-7. To tear down: run **Workflow 03** — state backend remains intact
+6. Run **Workflow 02** (push a change to `app/` or trigger manually) — approve the deploy gate
+7. To tear down: run **Workflow 03** — state backend remains intact for next deployment
 
 ---
 
@@ -172,7 +189,7 @@ Runs `terraform destroy -auto-approve`. The S3 state bucket and DynamoDB table a
 
 Served by **Gunicorn** on port 8000 (`python:3.11-slim` base image).
 
-App URL is printed at the end of Workflow 02's deploy job, and also available as a Terraform output after Workflow 01.
+The App Runner URL is printed at the end of Workflow 02's deploy job and is also available as a Terraform output after Workflow 01.
 
 ---
 
