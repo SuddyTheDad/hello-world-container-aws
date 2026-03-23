@@ -13,6 +13,7 @@ env:
   TF_STATE_BUCKET: s3-hwc-aws-tfstate-039612850740
   TF_STATE_TABLE: ddb-hwc-aws-tfstate-lock
   TF_STATE_KEY: hwc-aws.terraform.tfstate
+  ECR_REPO_NAME: hello-world-aws
 
 jobs:
   bootstrap:
@@ -83,6 +84,29 @@ jobs:
         working-directory: infra
         run: terraform plan -out=tfplan
 
-      - name: Terraform Apply
+      - name: Terraform Apply ECR and IAM (targeted)
+        working-directory: infra
+        run: |
+          terraform apply -auto-approve \
+            -target=aws_ecr_repository.main \
+            -target=aws_ecr_lifecycle_policy.main \
+            -target=aws_iam_role.apprunner_ecr_access \
+            -target=aws_iam_role_policy_attachment.apprunner_ecr_access
+
+      - name: Push seed image to ECR
+        run: |
+          ECR_URL=$(aws ecr describe-repositories \
+            --repository-names ${{ env.ECR_REPO_NAME }} \
+            --query 'repositories[0].repositoryUri' \
+            --output text)
+
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
+            | docker login --username AWS --password-stdin $ECR_URL
+
+          docker pull python:3.11-slim
+          docker tag python:3.11-slim $ECR_URL:latest
+          docker push $ECR_URL:latest
+
+      - name: Terraform Apply (full)
         working-directory: infra
         run: terraform apply -auto-approve tfplan
