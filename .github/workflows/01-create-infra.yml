@@ -31,7 +31,8 @@ jobs:
           aws s3api create-bucket \
             --bucket ${{ env.TF_STATE_BUCKET }} \
             --region ${{ env.AWS_REGION }} \
-            --create-bucket-configuration LocationConstraint=${{ env.AWS_REGION }}
+            --create-bucket-configuration LocationConstraint=${{ env.AWS_REGION }} \
+            2>&1 | grep -v "BucketAlreadyOwnedByYou" || true
 
           aws s3api put-bucket-versioning \
             --bucket ${{ env.TF_STATE_BUCKET }} \
