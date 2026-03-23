@@ -145,7 +145,19 @@ jobs:
             }"
 
           echo "Waiting for deployment to complete..."
-          aws apprunner wait service-updated --service-arn $SERVICE_ARN
+          for i in $(seq 1 60); do
+            STATUS=$(aws apprunner describe-service \
+              --service-arn $SERVICE_ARN \
+              --query "Service.Status" \
+              --output text)
+            echo "  [$i/60] Status: $STATUS"
+            if [ "$STATUS" = "RUNNING" ]; then break; fi
+            if [ "$STATUS" = "UPDATE_FAILED" ] || [ "$STATUS" = "CREATE_FAILED" ]; then
+              echo "Deployment failed with status: $STATUS"
+              exit 1
+            fi
+            sleep 10
+          done
 
           SERVICE_URL=$(aws apprunner describe-service \
             --service-arn $SERVICE_ARN \
