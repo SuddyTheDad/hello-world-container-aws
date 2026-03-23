@@ -100,8 +100,12 @@ jobs:
           aws ecr get-login-password --region ${{ env.AWS_REGION }} \
             | docker login --username AWS --password-stdin $ECR_URL
 
-          docker pull python:3.11-slim
-          docker tag python:3.11-slim $ECR_URL:latest
+          # Build a minimal seed image that serves HTTP on port 8000 so
+          # App Runner can start the container and pass its health check.
+          # Workflow 02 will replace this with the real application image.
+          printf 'FROM python:3.11-slim\nCMD ["python", "-m", "http.server", "8000"]\n' > /tmp/Dockerfile.seed
+          docker build -t seed-image -f /tmp/Dockerfile.seed /tmp
+          docker tag seed-image $ECR_URL:latest
           docker push $ECR_URL:latest
 
       - name: Terraform Apply (full)
