@@ -81,10 +81,6 @@ jobs:
             -backend-config="region=${{ env.AWS_REGION }}" \
             -backend-config="dynamodb_table=${{ env.TF_STATE_TABLE }}"
 
-      - name: Terraform Plan
-        working-directory: infra
-        run: terraform plan -out=tfplan
-
       - name: Terraform Apply ECR and IAM (targeted)
         working-directory: infra
         run: |
@@ -107,6 +103,10 @@ jobs:
           docker pull python:3.11-slim
           docker tag python:3.11-slim $ECR_URL:latest
           docker push $ECR_URL:latest
+
+      - name: Terraform Plan (full)
+        working-directory: infra
+        run: terraform plan -out=tfplan
 
       - name: Terraform Apply (full)
         working-directory: infra
