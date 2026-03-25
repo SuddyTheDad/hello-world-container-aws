@@ -14,6 +14,7 @@ env:
   TF_STATE_TABLE: ddb-hwc-aws-tfstate-lock
   TF_STATE_KEY: hwc-aws.terraform.tfstate
   ECR_REPO_NAME: hello-world-aws
+  FUNC_ECR_REPO_NAME: hello-world-aws-func
 
 jobs:
   terraform-destroy:
@@ -52,6 +53,18 @@ jobs:
           if [ "$IMAGE_IDS" != "[]" ] && [ -n "$IMAGE_IDS" ]; then
             aws ecr batch-delete-image \
               --repository-name ${{ env.ECR_REPO_NAME }} \
+              --image-ids "$IMAGE_IDS"
+          fi
+
+      - name: Empty Lambda ECR repository
+        run: |
+          IMAGE_IDS=$(aws ecr list-images \
+            --repository-name ${{ env.FUNC_ECR_REPO_NAME }} \
+            --query 'imageIds[*]' \
+            --output json 2>/dev/null || echo "[]")
+          if [ "$IMAGE_IDS" != "[]" ] && [ -n "$IMAGE_IDS" ]; then
+            aws ecr batch-delete-image \
+              --repository-name ${{ env.FUNC_ECR_REPO_NAME }} \
               --image-ids "$IMAGE_IDS"
           fi
 

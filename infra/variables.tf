@@ -21,3 +21,9 @@ variable "image_tag" {
   type        = string
   default     = "latest"
 }
+
+variable "func_ecr_repo_name" {
+  description = "Name of the ECR repository for Lambda functions"
+  type        = string
+  default     = "hello-world-aws-func"
+}

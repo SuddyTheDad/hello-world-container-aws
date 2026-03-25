@@ -8,6 +8,8 @@ on:
     paths:
       - app/**
       - Dockerfile
+      - func/**
+      - Dockerfile.func
 
 permissions:
   id-token: write
@@ -17,6 +19,9 @@ env:
   AWS_REGION: ap-southeast-2
   ECR_REPO_NAME: hello-world-aws
   APP_RUNNER_SERVICE_NAME: svc-hwc-aws-aue-001
+  FUNC_ECR_REPO_NAME: hello-world-aws-func
+  LAMBDA_HTTP_FUNCTION: func-hwc-aws-http-001
+  LAMBDA_SCHEDULED_FUNCTION: func-hwc-aws-scheduled-001
   PYTHON_VERSION: "3.11"
 
 jobs:
@@ -167,3 +172,130 @@ jobs:
 
           echo "Deployment complete."
           echo "App URL: https://$SERVICE_URL"
+
+  lint-func:
+    name: Flake8 Lint (func)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install flake8
+      - run: |
+          flake8 func \
+            --max-line-length=120 \
+            --exclude=func/tests
+
+  security-scan-func:
+    name: Bandit Security Scan (func)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install bandit
+      - run: |
+          bandit -r func \
+            --exclude func/tests \
+            -ll
+
+  unit-tests-func:
+    name: Pytest with Coverage (func)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: |
+          pip install \
+            -r func/requirements.txt \
+            pytest pytest-cov
+      - run: |
+          pytest func/tests \
+            --cov=func \
+            --cov-report=xml:coverage-func.xml \
+            --cov-report=term-missing \
+            --cov-fail-under=80
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-func-report
+          path: coverage-func.xml
+
+  build-and-push-func:
+    name: Build and Push Lambda Image
+    runs-on: ubuntu-latest
+    needs: [lint-func, security-scan-func, unit-tests-func]
+    outputs:
+      image_tag: ${{ steps.build.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Lambda image
+        id: build
+        run: |
+          IMAGE_TAG=${{ github.run_number }}
+          FULL_IMAGE=${{ steps.ecr-login.outputs.registry }}/${{ env.FUNC_ECR_REPO_NAME }}:$IMAGE_TAG
+
+          docker build -t $FULL_IMAGE -f Dockerfile.func .
+          docker push $FULL_IMAGE
+
+          docker tag $FULL_IMAGE ${{ steps.ecr-login.outputs.registry }}/${{ env.FUNC_ECR_REPO_NAME }}:latest
+          docker push ${{ steps.ecr-login.outputs.registry }}/${{ env.FUNC_ECR_REPO_NAME }}:latest
+
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+  deploy-func:
+    name: Deploy Lambda Functions
+    runs-on: ubuntu-latest
+    needs: build-and-push-func
+    environment: prod
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Update Lambda functions
+        run: |
+          IMAGE_URI=${{ steps.ecr-login.outputs.registry }}/${{ env.FUNC_ECR_REPO_NAME }}:${{ needs.build-and-push-func.outputs.image_tag }}
+
+          aws lambda update-function-code \
+            --function-name ${{ env.LAMBDA_HTTP_FUNCTION }} \
+            --image-uri $IMAGE_URI
+
+          aws lambda wait function-updated \
+            --function-name ${{ env.LAMBDA_HTTP_FUNCTION }}
+
+          aws lambda update-function-code \
+            --function-name ${{ env.LAMBDA_SCHEDULED_FUNCTION }} \
+            --image-uri $IMAGE_URI
+
+          aws lambda wait function-updated \
+            --function-name ${{ env.LAMBDA_SCHEDULED_FUNCTION }}
+
+          API_URL=$(aws apigatewayv2 get-apis \
+            --query "Items[?Name=='apigw-hwc-aws-001'].ApiEndpoint" \
+            --output text)
+
+          echo "Lambda deployment complete."
+          echo "HTTP Function: ${{ env.LAMBDA_HTTP_FUNCTION }}"
+          echo "Scheduled Function: ${{ env.LAMBDA_SCHEDULED_FUNCTION }}"
+          echo "API Gateway URL: $API_URL/hello"

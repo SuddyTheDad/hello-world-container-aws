@@ -14,6 +14,7 @@ env:
   TF_STATE_TABLE: ddb-hwc-aws-tfstate-lock
   TF_STATE_KEY: hwc-aws.terraform.tfstate
   ECR_REPO_NAME: hello-world-aws
+  FUNC_ECR_REPO_NAME: hello-world-aws-func
 
 jobs:
   bootstrap:
@@ -88,7 +89,11 @@ jobs:
             -target=aws_ecr_repository.main \
             -target=aws_ecr_lifecycle_policy.main \
             -target=aws_iam_role.apprunner_ecr_access \
-            -target=aws_iam_role_policy_attachment.apprunner_ecr_access
+            -target=aws_iam_role_policy_attachment.apprunner_ecr_access \
+            -target=aws_ecr_repository.func \
+            -target=aws_ecr_lifecycle_policy.func \
+            -target=aws_iam_role.lambda_exec \
+            -target=aws_iam_role_policy_attachment.lambda_basic
 
       - name: Push seed image to ECR
         run: |
@@ -107,6 +112,31 @@ jobs:
           docker build -t seed-image -f /tmp/Dockerfile.seed /tmp
           docker tag seed-image $ECR_URL:latest
           docker push $ECR_URL:latest
+
+      - name: Push seed image to Lambda ECR
+        run: |
+          FUNC_ECR_URL=$(aws ecr describe-repositories \
+            --repository-names ${{ env.FUNC_ECR_REPO_NAME }} \
+            --query 'repositories[0].repositoryUri' \
+            --output text)
+
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} \
+            | docker login --username AWS --password-stdin $FUNC_ECR_URL
+
+          # Build a minimal seed Lambda image so the functions can be created
+          # by Terraform. Workflow 02 will replace this with the real handler image.
+          cat > /tmp/seed_handler.py << 'EOF'
+def handler(event, context):
+    return {"statusCode": 200, "body": "seed"}
+EOF
+          cat > /tmp/Dockerfile.func.seed << 'EOF'
+FROM public.ecr.aws/lambda/python:3.11
+COPY seed_handler.py /var/task/handler.py
+CMD ["handler.handler"]
+EOF
+          docker build -t seed-func -f /tmp/Dockerfile.func.seed /tmp
+          docker tag seed-func $FUNC_ECR_URL:latest
+          docker push $FUNC_ECR_URL:latest
 
       - name: Terraform Apply (full)
         working-directory: infra
