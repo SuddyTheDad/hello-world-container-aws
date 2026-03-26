@@ -125,15 +125,8 @@ jobs:
 
           # Build a minimal seed Lambda image so the functions can be created
           # by Terraform. Workflow 02 will replace this with the real handler image.
-          cat > /tmp/seed_handler.py << 'EOF'
-def handler(event, context):
-    return {"statusCode": 200, "body": "seed"}
-EOF
-          cat > /tmp/Dockerfile.func.seed << 'EOF'
-FROM public.ecr.aws/lambda/python:3.11
-COPY seed_handler.py /var/task/handler.py
-CMD ["handler.handler"]
-EOF
+          printf 'def handler(event, context):\n    return {"statusCode": 200, "body": "seed"}\n' > /tmp/seed_handler.py
+          printf 'FROM public.ecr.aws/lambda/python:3.11\nCOPY seed_handler.py /var/task/handler.py\nCMD ["handler.handler"]\n' > /tmp/Dockerfile.func.seed
           docker build -t seed-func -f /tmp/Dockerfile.func.seed /tmp
           docker tag seed-func $FUNC_ECR_URL:latest
           docker push $FUNC_ECR_URL:latest
